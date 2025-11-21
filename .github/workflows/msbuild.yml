@@ -1,0 +1,91 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+name: MSBuild
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+env:
+  # Path to the solution file relative to the root of the project.
+  SOLUTION_FILE_PATH: .
+
+  # Configuration type to build.
+  # You can convert this to a build matrix if you need coverage of multiple configuration types.
+  # https://docs.github.com/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+  BUILD_CONFIGURATION: Release
+
+  NETSDKURL: 'https://www.nuget.org/api/v2/package/Microsoft.NETFramework.ReferenceAssemblies.net40/1.0.3'
+  SDKSYSTEMPATH: 'C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework'
+  NETVERSION: v4.0
+
+  NAME_BATGADGET: SharpWSUS
+
+jobs:
+  build:
+    runs-on: windows-2025
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v1.0.2
+
+    - name: Install .net framework SDK
+      shell: pwsh
+      run: |
+        echo "download ${{env.NETSDKURL}}"
+        Invoke-WebRequest -Uri "${{env.NETSDKURL}}" -OutFile "${env:temp}/netsdk.zip"
+        echo "unzip netsdk.zip"
+        Expand-Archive -Force -LiteralPath "${env:temp}/netsdk.zip" -DestinationPath "${env:temp}/netsdk"
+        echo "delete ${{env.SDKSYSTEMPATH}}\${{env.NETVERSION}}"
+        [IO.Directory]::Delete("${{env.SDKSYSTEMPATH}}\${{env.NETVERSION}}", $True)
+        echo "move SDK to ${{env.SDKSYSTEMPATH}}\${{env.NETVERSION}}"
+        Move-Item -Force -LiteralPath "${env:temp}/netsdk/build/.NETFramework/${{env.NETVERSION}}" -Destination "${{env.SDKSYSTEMPATH}}\${{env.NETVERSION}}"
+
+
+
+    - name: Restore NuGet packages
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: nuget restore ${{env.SOLUTION_FILE_PATH}}
+
+    - name: Build
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      # Add additional options to the MSBuild command line here (like platform or verbosity level).
+      # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
+      run: |
+       msbuild /m /p:Configuration=${{env.BUILD_CONFIGURATION}} /p:Platform="Any CPU" ${{env.SOLUTION_FILE_PATH}} /p:OutDir=compiled/
+
+    - name: Package Stuff
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: |
+        cd ${{env.SOLUTION_FILE_PATH}}
+        ls ${{env.NAME_BATGADGET}}/compiled
+        Compress-Archive -Path ${{env.NAME_BATGADGET}}/compiled/${{env.NAME_BATGADGET}}.exe -DestinationPath ${{ env.NAME_BATGADGET }}.zip
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: Release ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+  
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ${{env.SOLUTION_FILE_PATH}}/${{env.NAME_BATGADGET}}.zip
+        asset_name: ${{env.NAME_BATGADGET}}.zip
+        asset_content_type: application/zip
